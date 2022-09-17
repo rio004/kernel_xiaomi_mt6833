@@ -1257,6 +1257,4 @@ config TOUCHSCREEN_MTK_TOUCH
 
          To compile this dirver for used touch IC.
 
-source "drivers/input/touchscreen/xiaomi/Kconfig"
-
 endif

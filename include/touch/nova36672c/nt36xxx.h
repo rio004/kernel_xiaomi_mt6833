@@ -176,16 +176,6 @@ struct nvt_ts_data {
 #endif
 	int gesture_enabled;
 
-#ifdef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
-	bool palm_sensor_changed;
-	bool palm_sensor_switch;
-
-//porting from xiaomi
-	int gesture_command_delayed;
-	bool dev_pm_suspend;
-	struct completion dev_pm_suspend_completion;
-	int palm_flag;
-#endif
 	int db_wakeup;
 	struct class *ts_tp_class;
 	struct device *ts_touch_dev;
