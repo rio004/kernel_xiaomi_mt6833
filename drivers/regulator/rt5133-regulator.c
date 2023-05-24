@@ -735,6 +735,7 @@ static const struct regmap_bus rt5133_regmap_bus = {
 static const struct regmap_config rt5133_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
+
 	.max_register = RT5133_REG_LDO8_CTRL4,
 };
 
@@ -910,6 +911,7 @@ static int rt5133_probe(struct i2c_client *i2c)
 	if (ret < 0)
 		return ret;
 #endif /* GENERIC_DEBUGFS*/
+
 
 	ret = rt5133_validate_vendor_info(priv);
 	if (ret) {
