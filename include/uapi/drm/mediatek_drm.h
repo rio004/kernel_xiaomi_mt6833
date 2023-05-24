@@ -176,6 +176,14 @@ struct msync_parameter_table {
 
 enum TONE_ENUM { PURP_TONE = 0, SKIN_TONE = 1, GRASS_TONE = 2, SKY_TONE = 3 };
 
+struct DISP_PQ_BYPASS_SWITCH {
+	int color_bypass;
+	int ccorr_bypass;
+	int gamma_bypass;
+	int dither_bypass;
+	int aal_bypass;
+};
+
 struct DISP_PQ_WIN_PARAM {
 	int split_en;
 	int start_x;
@@ -447,6 +455,7 @@ struct DISP_PQ_PARAM {
 
 /* PQ */
 #define DRM_MTK_PQ_PERSIST_PROPERTY	0x1F
+#define DRM_MTK_PQ_DEBUG			0x1F
 #define DRM_MTK_SET_CCORR			0x20
 #define DRM_MTK_CCORR_EVENTCTL   0x21
 #define DRM_MTK_CCORR_GET_IRQ    0x22
@@ -766,6 +775,9 @@ struct mtk_drm_pq_caps_info {
 
 #define DRM_IOCTL_MTK_PQ_PERSIST_PROPERTY    DRM_IOWR(DRM_COMMAND_BASE + \
 		DRM_MTK_PQ_PERSIST_PROPERTY, unsigned int [32])
+
+#define DRM_IOCTL_MTK_PQ_DEBUG    DRM_IOWR(DRM_COMMAND_BASE + \
+		DRM_MTK_PQ_DEBUG, struct DISP_PQ_BYPASS_SWITCH)
 
 #define DRM_IOCTL_MTK_SET_CCORR     DRM_IOWR(DRM_COMMAND_BASE + \
 		DRM_MTK_SET_CCORR, struct DRM_DISP_CCORR_COEF_T)
