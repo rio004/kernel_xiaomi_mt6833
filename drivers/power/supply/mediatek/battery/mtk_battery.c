@@ -130,6 +130,14 @@ static enum power_supply_property battery_props[] = {
 	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
 	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+	POWER_SUPPLY_PROP_BATTERY_VOLTAGE,
+	POWER_SUPPLY_PROP_BATTERY_TEMP,
+	POWER_SUPPLY_PROP_RESISTANCE_ID,
+	POWER_SUPPLY_PROP_BATT_ID_UPDATE,
+	POWER_SUPPLY_PROP_SHUTDOWN_DELAY,
+	POWER_SUPPLY_PROP_CHARGER_TEMP,
+	POWER_SUPPLY_PROP_CHARGE_TYPE,
+	POWER_SUPPLY_PROP_RESISTANCE,
 };
 
 /* weak function */
@@ -420,6 +428,54 @@ void battery_update_psd(struct battery_data *bat_data)
 	bat_data->BAT_batt_temp = battery_get_bat_temperature();
 }
 
+int get_charger_pump_temp(void)
+{
+	int ret;
+	union power_supply_propval val = {0,};
+	struct power_supply *charger_dev;
+
+	charger_dev = power_supply_get_by_name("sc8551-standalone");
+	if (!charger_dev){
+		charger_dev = power_supply_get_by_name("ln8000-standalone");
+		if (!charger_dev){
+			pr_info("%s:get ln8000-standalone fail\n",__func__);
+			return 0;
+		}
+	}
+	ret = power_supply_get_property(charger_dev,POWER_SUPPLY_PROP_SC_DIE_TEMPERATURE, &val);
+	return val.intval;
+}
+
+#define SHUTDOWN_DELAY_VOL	3450
+extern bool mtk_shutdown_delay_enable;
+extern bool enable_notify_shutdown;
+
+int get_charge_type(struct battery_data *data)
+{
+	struct charger_device *chg1_dev;
+	int ret,cv;
+	chg1_dev = get_charger_by_name("primary_chg");
+	if (chg1_dev) {
+		ret = charger_dev_get_constant_voltage(chg1_dev, &cv);
+	} else {
+		bm_err("*** Error : can't find primary charger ***\n");
+	}
+
+	if (data->BAT_STATUS == POWER_SUPPLY_STATUS_CHARGING) {
+		bm_err("%s,cv=%d,batt_vol=%d\n",__func__,cv,data->BAT_batt_vol);
+		if (data->BAT_batt_vol*1000 < 3100000)
+			return POWER_SUPPLY_CHARGE_TYPE_TRICKLE;
+		else if (data->BAT_batt_vol*1000 < cv)
+			return POWER_SUPPLY_CHARGE_TYPE_FAST;
+		else
+			return POWER_SUPPLY_CHARGE_TYPE_TAPER;
+	} else if (data->BAT_STATUS == POWER_SUPPLY_STATUS_FULL) {
+		return POWER_SUPPLY_CHARGE_TYPE_NONE;
+	} else {
+		return POWER_SUPPLY_CHARGE_TYPE_NONE;
+	}
+}
+
 static int battery_get_property(struct power_supply *psy,
 	enum power_supply_property psp,
 	union power_supply_propval *val)
@@ -427,6 +483,10 @@ static int battery_get_property(struct power_supply *psy,
 	int ret = 0;
 	int fgcurrent = 0;
 	bool b_ischarging = 0;
+	int vbat_mv;
+	static bool shutdown_delay_cancel;
+	static bool last_shutdown_delay;
+	static bool shutdown_delay;
 
 	struct battery_data *data =
 		container_of(psy->desc, struct battery_data, psd);
@@ -452,6 +512,52 @@ static int battery_get_property(struct power_supply *psy,
 			val->intval = gm.fixed_uisoc;
 		else
 			val->intval = data->BAT_CAPACITY;
+
+		if (enable_notify_shutdown) {
+			if (data->BAT_STATUS == POWER_SUPPLY_STATUS_CHARGING) {
+				enable_notify_shutdown = false;
+			} else {
+				val->intval = 0;
+			}
+		}
+
+		if (mtk_shutdown_delay_enable) {
+			if (val->intval == 0) {
+				vbat_mv = battery_get_bat_voltage();
+				bm_err("shutdown_delay=%d,vbat_mv=%d,BAT_STATUS=%d,shutdown_delay_cancel=%d\n",
+					shutdown_delay,vbat_mv,data->BAT_STATUS,shutdown_delay_cancel);
+				if (vbat_mv <= SHUTDOWN_DELAY_VOL
+					&& data->BAT_STATUS != POWER_SUPPLY_STATUS_CHARGING) {
+					shutdown_delay = true;
+					val->intval = 1;
+				} else if (data->BAT_STATUS == POWER_SUPPLY_STATUS_CHARGING
+								&& shutdown_delay) {
+					shutdown_delay = false;
+					shutdown_delay_cancel = true;
+					val->intval = 1;
+				} else {
+					shutdown_delay = false;
+					if (shutdown_delay_cancel)
+						val->intval = 1;
+				}
+				val->intval = 1;
+			} else {
+				shutdown_delay = false;
+				shutdown_delay_cancel = false;
+			}
+
+			if (last_shutdown_delay != shutdown_delay) {
+				last_shutdown_delay = shutdown_delay;
+				if (data->psy)
+					power_supply_changed(data->psy);
+			}
+		}
+		break;
+	case POWER_SUPPLY_PROP_SHUTDOWN_DELAY:
+		val->intval = shutdown_delay;
+		break;
+	case POWER_SUPPLY_PROP_CHARGER_TEMP:
+		val->intval = get_charger_pump_temp();
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		b_ischarging = gauge_get_current(&fgcurrent);
@@ -509,34 +615,62 @@ static int battery_get_property(struct power_supply *psy,
 		ret = 0;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
-		if (check_cap_level(data->BAT_CAPACITY) ==
-			POWER_SUPPLY_CAPACITY_LEVEL_UNKNOWN)
-			val->intval = 0;
-		else {
-			int q_max_mah = 0;
-			int q_max_uah = 0;
-
-			q_max_mah =
-				fg_table_cust_data.fg_profile[
-				gm.battery_id].q_max / 10;
-
-			q_max_uah = q_max_mah * 1000;
-			if (q_max_uah <= 100000) {
-				bm_debug("%s q_max_mah:%d q_max_uah:%d\n",
-					__func__, q_max_mah, q_max_uah);
-				q_max_uah = 100001;
-			}
-			val->intval = q_max_uah;
-		}
+		val->intval = 5000000;
 		break;
-
-
+	case POWER_SUPPLY_PROP_BATTERY_VOLTAGE:
+		val->intval = data->BAT_batt_vol * 1000;
+		break;
+	case POWER_SUPPLY_PROP_BATTERY_TEMP:
+		val->intval = gm.tbat_precise;
+		break;
+	case POWER_SUPPLY_PROP_RESISTANCE_ID:
+		val->intval = 0;
+		break;
+	case POWER_SUPPLY_PROP_BATT_ID_UPDATE:
+		val->intval = 0;
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_TYPE:
+		val->intval = get_charge_type(data);
+		break;
+	case POWER_SUPPLY_PROP_RESISTANCE:
+		val->intval = 150000;
+		break;
 	default:
 		ret = -EINVAL;
 		break;
 	}
 
 	return ret;
+}
+
+static int battery_set_prop(struct power_supply *psy,
+	enum power_supply_property psp,
+	const union power_supply_propval *val)
+{
+	int ret;
+	switch (psp) {
+	case POWER_SUPPLY_PROP_BATT_ID_UPDATE:
+		fg_custom_init_from_header();
+		pr_err("set batt id prop %d\n", val->intval);
+	default:
+		pr_err("set prop %d is not supported in battery\n", psp);
+		ret = -EINVAL;
+		break;
+	}
+
+	return ret;
+}
+
+static int battery_prop_is_writeable(struct power_supply *psy,
+	enum power_supply_property psp)
+{
+	switch (psp) {
+	case POWER_SUPPLY_PROP_BATT_ID_UPDATE:
+		return 1;
+	default:
+		break;
+	}
+	return 0;
 }
 
 /* battery_data initialization */
@@ -547,6 +681,8 @@ struct battery_data battery_main = {
 		.properties = battery_props,
 		.num_properties = ARRAY_SIZE(battery_props),
 		.get_property = battery_get_property,
+		.set_property = battery_set_prop,
+		.property_is_writeable = battery_prop_is_writeable,
 		},
 
 	.BAT_STATUS = POWER_SUPPLY_STATUS_DISCHARGING,
@@ -616,12 +752,37 @@ bool fg_interrupt_check(void)
 	return true;
 }
 
+static void battery_report_full(struct battery_data *bat_data)
+{
+	static struct charger_device *primary_charger;
+	bool chg_done = false;
+
+	if (!primary_charger) {
+		pr_err("primary_charger is NULL\n");
+		primary_charger = get_charger_by_name("primary_chg");
+	}
+	charger_dev_is_charging_done(primary_charger, &chg_done);
+
+	if (bat_data->BAT_CAPACITY == 100 && upmu_get_rgs_chrdet() != 0
+		&& bat_data->BAT_STATUS != POWER_SUPPLY_STATUS_DISCHARGING
+		&& chg_done) {
+		bat_data->BAT_STATUS = POWER_SUPPLY_STATUS_FULL;
+		bm_err("battery_update set FULL! ui:%d chr:%d %d done:%d\n",
+			bat_data->BAT_CAPACITY, upmu_get_rgs_chrdet(),
+			bat_data->BAT_STATUS, chg_done);
+	}
+	bm_err("battery_update status: ui:%d chr:%d status%d done:%d temp:%d\n",
+		bat_data->BAT_CAPACITY, upmu_get_rgs_chrdet(), bat_data->BAT_STATUS,
+		chg_done);
+}
+
 void battery_update(struct battery_data *bat_data)
 {
 	struct power_supply *bat_psy = bat_data->psy;
 
+	battery_report_full(bat_data);
 	battery_update_psd(&battery_main);
-	bat_data->BAT_TECHNOLOGY = POWER_SUPPLY_TECHNOLOGY_LION;
+	bat_data->BAT_TECHNOLOGY = POWER_SUPPLY_TECHNOLOGY_LIPO;
 	bat_data->BAT_HEALTH = POWER_SUPPLY_HEALTH_GOOD;
 	bat_data->BAT_PRESENT = 1;
 
@@ -1367,15 +1528,15 @@ unsigned int TempConverBattThermistor(int temp)
 	int i;
 	unsigned int TBatt_R_Value = 0xffff;
 
-	if (temp >= Fg_Temperature_Table[20].BatteryTemp) {
-		TBatt_R_Value = Fg_Temperature_Table[20].TemperatureR;
+	if (temp >= Fg_Temperature_Table[22].BatteryTemp) {
+		TBatt_R_Value = Fg_Temperature_Table[22].TemperatureR;
 	} else if (temp <= Fg_Temperature_Table[0].BatteryTemp) {
 		TBatt_R_Value = Fg_Temperature_Table[0].TemperatureR;
 	} else {
 		RES1 = Fg_Temperature_Table[0].TemperatureR;
 		TMP1 = Fg_Temperature_Table[0].BatteryTemp;
 
-		for (i = 0; i <= 20; i++) {
+		for (i = 0; i <= 22; i++) {
 			if (temp <= Fg_Temperature_Table[i].BatteryTemp) {
 				RES2 = Fg_Temperature_Table[i].TemperatureR;
 				TMP2 = Fg_Temperature_Table[i].BatteryTemp;
@@ -1408,13 +1569,13 @@ int BattThermistorConverTemp(int Res)
 
 	if (Res >= Fg_Temperature_Table[0].TemperatureR) {
 		TBatt_Value = -400;
-	} else if (Res <= Fg_Temperature_Table[20].TemperatureR) {
-		TBatt_Value = 600;
+	} else if (Res <= Fg_Temperature_Table[22].TemperatureR) {
+		TBatt_Value = 700;
 	} else {
 		RES1 = Fg_Temperature_Table[0].TemperatureR;
 		TMP1 = Fg_Temperature_Table[0].BatteryTemp;
 
-		for (i = 0; i <= 20; i++) {
+		for (i = 0; i <= 22; i++) {
 			if (Res >= Fg_Temperature_Table[i].TemperatureR) {
 				RES2 = Fg_Temperature_Table[i].TemperatureR;
 				TMP2 = Fg_Temperature_Table[i].BatteryTemp;

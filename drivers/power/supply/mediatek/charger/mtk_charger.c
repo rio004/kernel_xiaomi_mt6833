@@ -267,6 +267,20 @@ struct charger_consumer *charger_manager_get_by_name(struct device *dev,
 }
 EXPORT_SYMBOL(charger_manager_get_by_name);
 
+#define RERUN_BC12_DELAY_1S 1000
+#define RERUN_BC12_DELAY_8S 8000
+static void mtk_enable_hv_work(struct work_struct *work)
+{
+	struct charger_manager *info = container_of(work,
+			struct charger_manager, enable_hv_work.work);
+	int ret;
+
+	pr_info("%s:rerun bc12 check for hv_enable:%d.\n", __func__, info->enable_hv_charging);
+	ret = charger_dev_rerun_apsd(info->chg1_dev, !info->enable_hv_charging);
+	if (ret < 0)
+		chr_err("%s: en chgdet fail.\n", __func__);
+}
+
 int charger_manager_enable_high_voltage_charging(
 			struct charger_consumer *consumer, bool en)
 {
@@ -274,6 +288,7 @@ int charger_manager_enable_high_voltage_charging(
 	struct list_head *pos = NULL;
 	struct list_head *phead = &consumer_head;
 	struct charger_consumer *ptr = NULL;
+	int ret;
 
 	if (!info)
 		return -EINVAL;
@@ -304,6 +319,23 @@ int charger_manager_enable_high_voltage_charging(
 
 	pr_info("%s: user: %s, en = %d\n", __func__, dev_name(consumer->dev),
 		info->enable_hv_charging);
+
+	if (info->enable_hv_charging) {
+		pr_info("%s: enable_hv_charging: schedule_work: enable_hv_work.\n", __func__);
+		cancel_delayed_work_sync(&info->enable_hv_work);
+		schedule_delayed_work(&info->enable_hv_work,
+				msecs_to_jiffies(RERUN_BC12_DELAY_8S));
+	} else {
+		if (delayed_work_pending(&info->enable_hv_work)) {
+			pr_info("%s: disable_hv_charging: cancel_work: enable_hv_work.\n", __func__);
+			cancel_delayed_work_sync(&info->enable_hv_work);
+		} else {
+			pr_info("%s: first open camera: disable_hv_charging.\n", __func__);
+			ret = charger_dev_rerun_apsd(info->chg1_dev, !info->enable_hv_charging);
+			if (ret < 0)
+				chr_err("%s: en chgdet fail.\n", __func__);
+		}
+	}
 
 	if (mtk_pe50_get_is_connect(info) && !info->enable_hv_charging)
 		mtk_pe50_stop_algo(info, true);
@@ -3989,6 +4021,7 @@ static int mtk_charger_probe(struct platform_device *pdev)
 		charger_manager_force_disable_power_path(
 			info->chg1_consumer, MAIN_CHARGER, true);
 
+	INIT_DELAYED_WORK(&info->enable_hv_work, mtk_enable_hv_work);
 	info->init_done = true;
 	_wake_up_charger(info);
 
@@ -4016,6 +4049,7 @@ static void mtk_charger_shutdown(struct platform_device *dev)
 			mtk_pe_reset_ta_vchr(info);
 		pr_debug("%s: reset TA before shutdown\n", __func__);
 	}
+	cancel_delayed_work_sync(&info->enable_hv_work);
 }
 
 static const struct of_device_id mtk_charger_of_match[] = {

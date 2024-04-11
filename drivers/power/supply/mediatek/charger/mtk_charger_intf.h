@@ -316,7 +316,7 @@ struct charger_manager {
 	struct charger_data dvchg2_data;
 
 	struct adapter_device *pd_adapter;
-
+	struct delayed_work enable_hv_work;
 
 	enum charger_type chr_type;
 	bool can_charging;
